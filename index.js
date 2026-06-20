@@ -1,6 +1,4 @@
 /**
- * plugins/manymedia/index.js
- *
  * Downloads video or audio via yt-dlp
  * and uploads/sends to server. Handles /video and /audio commands.
  */
@@ -19,6 +17,17 @@ logStream.on("error", err => console.error("[logStream]", err));
 const DOWNLOADS_DIR = path.resolve("downloads");
 const UPLOAD_URL    = "https://api.stxerr.dev/upload";
 
+// Public API
+// They only download and hand back the file; sending/uploading is the caller's job.
+
+export const api = {
+  async downloadVideo(url, ctx, t) {
+    return queueDownload(url, "mp4", ctx, t);
+  },
+  async downloadAudio(url, ctx, t) {
+    return queueDownload(url, "mp3", ctx, t);
+  },
+};
 
 // Resolve Reddit URL
 
@@ -39,8 +48,7 @@ async function resolveRedditUrl(url) {
   return { url: videoUrl, audioUrl };
 }
 
-
-// ─── Downloaders ──────────────────────────────────────────────────────────────
+// Downloaders
 
 function buildYtDlpArgs(url, format) {
   const isYouTube = url.includes("youtube.com") || url.includes("youtu.be");
@@ -158,7 +166,32 @@ async function downloadMedia(url, id, format, t) {
   return downloadYtDlp(resolvedUrl, id, format, t);
 }
 
-// ─── Upload ───────────────────────────────────────────────────────────────────
+// Queue wrapper — used by both the public API and the command handler.
+// Resolves with { filePath, cleanup }. Caller decides what to do with the
+// file and is responsible for calling cleanup() once it's done with it.
+
+function queueDownload(url, format, ctx, t) {
+  const id = `${format}-${Date.now()}`;
+
+  return new Promise((resolve, reject) => {
+    ctx.download.enqueue(
+      async () => {
+        try {
+          const { filePath, tmpDir } = await downloadMedia(url, id, format, t);
+          resolve({
+            filePath,
+            cleanup: () => fs.rmSync(tmpDir, { recursive: true, force: true }),
+          });
+        } catch (err) {
+          reject(err);
+        }
+      },
+      async () => reject(new Error(t("error.generic")))
+    );
+  });
+}
+
+// Upload
 
 const UPLOAD_RETRIES        = 4;
 const UPLOAD_RETRY_DELAY_MS = 3000;
@@ -199,35 +232,7 @@ async function uploadToServer(filePath, apiKey) {
   throw new Error(`Upload failed after ${UPLOAD_RETRIES} attempts: ${lastError.message}`);
 }
 
-// ─── Queue Handler ────────────────────────────────────────────────────────────
-
-function handleMedia(url, format, cmd, ctx, t) {
-  const { msg }      = ctx;
-  const uplToSrv     = ctx.config.get("UPL_MEDIA_TO_SRV", "no");
-  const srvApiKey    = ctx.config.get("MEDIA_SRV_API_KEY");
-  const id           = `${format}-${Date.now()}`;
-  const sendFile     = (p) => format === "mp3" ? ctx.sendAudio(p) : ctx.sendVideo(p);
-
-  ctx.download.enqueue(
-    async () => {
-      const { filePath, tmpDir } = await downloadMedia(url, id, format, t);
-      try {
-        if (uplToSrv === "yes") {
-          const link = await uploadToServer(filePath, srvApiKey);
-          await msg.reply(`*Download:*\n${link}`);
-        } else {
-          await sendFile(filePath);
-        }
-        ctx.log.info(`${cmd} completed → ${url}`);
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
-    },
-    async () => msg.reply(t("error.generic"))
-  );
-}
-
-// ─── Command Entry Point ──────────────────────────────────────────────────────
+// Command Entry Point — owns sending/uploading + cleanup
 
 export default async function (ctx) {
   const { msg }  = ctx;
@@ -249,7 +254,28 @@ export default async function (ctx) {
     }
 
     await msg.reply(t("downloading"));
-    handleMedia(url, format, cmd, ctx, t);
+
+    const uplToSrv  = ctx.config.get("UPL_MEDIA_TO_SRV", "no");
+    const srvApiKey = ctx.config.get("MEDIA_SRV_API_KEY");
+    const sendFile  = (p) => format === "mp3" ? ctx.sendAudio(p) : ctx.sendVideo(p);
+
+    queueDownload(url, format, ctx, t)
+      .then(async ({ filePath, cleanup }) => {
+        try {
+          if (uplToSrv === "yes") {
+            const link = await uploadToServer(filePath, srvApiKey);
+            await msg.reply(`*Download:*\n${link}`);
+          } else {
+            await sendFile(filePath);
+          }
+          ctx.log.info(`${cmd} completed → ${url}`);
+        } finally {
+          cleanup();
+        }
+      })
+      .catch(() => msg.reply(t("error.generic")));
+
     return;
   }
 }
+
