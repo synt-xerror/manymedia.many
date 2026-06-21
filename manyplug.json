@@ -7,7 +7,7 @@
     "website": "https://www.stxerr.dev"
   },
   "description": "Download videos and audio from any link.",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "license": "MIT",
   "category": "media",
   "service": false,

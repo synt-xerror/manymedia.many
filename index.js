@@ -1,6 +1,11 @@
 /**
  * Downloads video or audio via yt-dlp
  * and uploads/sends to server. Handles /video and /audio commands.
+ *
+ * NOTE: "mp3" segue sendo o identificador interno de formato de áudio por
+ * compatibilidade (api pública, configs etc.), mas o arquivo gerado de fato
+ * é OGG/Opus — necessário pro WhatsApp renderizar como voice note via
+ * ctx.sendAudio(path, { asVoice: true }). Ver discussão em [link/issue].
  */
 
 import { execFile, spawn } from "child_process";
@@ -30,22 +35,39 @@ export const api = {
 };
 
 // Resolve Reddit URL
+//
+// v.redd.it normalmente serve vídeo e áudio como streams DASH separados.
+// yt-dlp --get-url só imprime URLs cruas (sem nenhum marcador "AUDIO"), então
+// em vez de tentar adivinhar por texto, pedimos o JSON de formats e filtramos
+// por acodec/vcodec.
 
 async function resolveRedditUrl(url) {
   if (!url.includes("reddit.com") && !url.includes("redd.it")) return { url, audioUrl: null };
 
   const { stdout } = await execFileAsync("yt-dlp", [
-    "--get-url",
+    "-J",
     "--no-playlist",
     "--cookies", "cookies.txt",
     url,
   ]);
 
-  const lines     = stdout.trim().split("\n").filter(Boolean);
-  const videoUrl  = lines.find(l => !l.includes("AUDIO")) ?? lines[0];
-  const audioUrl  = lines.find(l => l.includes("AUDIO")) ?? null;
+  const formats = JSON.parse(stdout).formats ?? [];
 
-  return { url: videoUrl, audioUrl };
+  const audioFmt = formats
+    .filter(f => f.acodec && f.acodec !== "none" && (!f.vcodec || f.vcodec === "none"))
+    .sort((a, b) => (a.abr ?? 0) - (b.abr ?? 0))
+    .pop();
+
+  // Sem stream de áudio separado (ex: gif silencioso) → deixa o fluxo normal
+  // do yt-dlp cuidar, usando a URL original (não uma URL de CDN crua).
+  if (!audioFmt) return { url, audioUrl: null };
+
+  const videoFmt = formats
+    .filter(f => f.vcodec && f.vcodec !== "none")
+    .sort((a, b) => (a.height ?? 0) - (b.height ?? 0))
+    .pop();
+
+  return { url: videoFmt?.url ?? url, audioUrl: audioFmt.url };
 }
 
 // Downloaders
@@ -67,7 +89,7 @@ function buildYtDlpArgs(url, format) {
   ];
 
   if (isMp3) {
-    args.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
+    args.push("-x", "--audio-format", "opus", "--audio-quality", "0");
   } else {
     args.push("-f", "bv+ba/best");
   }
@@ -80,6 +102,19 @@ function buildYtDlpArgs(url, format) {
   }
 
   return args;
+}
+
+// yt-dlp com --audio-format opus gera extensão .opus (container Opus puro),
+// não .ogg. O WhatsApp só reconhece voice note com Opus DENTRO de OGG, então
+// remuxamos (sem reencode, é só trocar o container).
+
+async function ensureOggContainer(filePath, format) {
+  if (format !== "mp3" || !filePath.endsWith(".opus")) return filePath;
+
+  const oggPath = filePath.replace(/\.opus$/, ".ogg");
+  await execFileAsync("ffmpeg", ["-y", "-i", filePath, "-c", "copy", oggPath]);
+  fs.unlinkSync(filePath);
+  return oggPath;
 }
 
 async function downloadYtDlp(url, id, format, t) {
@@ -106,7 +141,7 @@ async function downloadYtDlp(url, id, format, t) {
     proc.stdout.on("data", d => { const s = d.toString(); stdout += s; console.log(`[video] ${s.trim()}`); });
     proc.stderr.on("data", d => { const s = d.toString(); stderr += s; logStream.write(s); console.error(`[video] ${s.trim()}`); });
 
-    proc.on("close", code => {
+    proc.on("close", async code => {
       console.log(`[video] yt-dlp exited with code ${code}`);
       if (code !== 0) {
         fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -125,6 +160,13 @@ async function downloadYtDlp(url, id, format, t) {
         return reject(new Error(t("error.fileNotFound")));
       }
 
+      try {
+        filePath = await ensureOggContainer(filePath, format);
+      } catch (err) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        return reject(new Error(`${t("error.downloadFailed")} (remux: ${err.message})`));
+      }
+
       resolve({ filePath, tmpDir });
     });
   });
@@ -136,11 +178,11 @@ async function downloadRedditWithAudio(videoUrl, audioUrl, id, format) {
 
   const isMp3    = format === "mp3";
   const filePath = isMp3
-    ? path.join(tmpDir, "audio.mp3")
+    ? path.join(tmpDir, "audio.ogg")
     : path.join(tmpDir, "video.mp4");
 
   const args = isMp3
-    ? ["-i", audioUrl, "-shortest", filePath]
+    ? ["-i", audioUrl, "-vn", "-c:a", "libopus", "-b:a", "128k", "-shortest", filePath]
     : ["-i", videoUrl, "-i", audioUrl, "-c:v", "copy", "-c:a", "aac", "-shortest", filePath];
 
   await new Promise((resolve, reject) => {
@@ -257,7 +299,9 @@ export default async function (ctx) {
 
     const uplToSrv  = ctx.config.get("UPL_MEDIA_TO_SRV", "no");
     const srvApiKey = ctx.config.get("MEDIA_SRV_API_KEY");
-    const sendFile  = (p) => format === "mp3" ? ctx.sendAudio(p) : ctx.sendVideo(p);
+    const sendFile  = (p) => format === "mp3"
+      ? ctx.sendAudio(p)
+      : ctx.sendVideo(p);
 
     queueDownload(url, format, ctx, t)
       .then(async ({ filePath, cleanup }) => {
@@ -278,4 +322,3 @@ export default async function (ctx) {
     return;
   }
 }
-
