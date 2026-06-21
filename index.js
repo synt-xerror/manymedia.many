@@ -89,7 +89,10 @@ function buildYtDlpArgs(url, format) {
   ];
 
   if (isMp3) {
-    args.push("-x", "--audio-format", "opus", "--audio-quality", "0");
+    // Extrai no codec nativo (sem reencode pra opus aqui ainda) — o encode
+    // final pra Opus mono/16kHz/voip acontece em ensureOggContainer, numa
+    // única passada, evitando perda de qualidade por reencodar duas vezes.
+    args.push("-x");
   } else {
     args.push("-f", "bv+ba/best");
   }
@@ -104,15 +107,29 @@ function buildYtDlpArgs(url, format) {
   return args;
 }
 
-// yt-dlp com --audio-format opus gera extensão .opus (container Opus puro),
-// não .ogg. O WhatsApp só reconhece voice note com Opus DENTRO de OGG, então
-// remuxamos (sem reencode, é só trocar o container).
+// Encode final pra voice note compatível com WhatsApp: Opus mono 16kHz
+// dentro de container OGG, com metadata/streams extras removidos (thumbnail
+// embutido, tags de origem etc. podem corromper a entrega no mobile).
 
 async function ensureOggContainer(filePath, format) {
-  if (format !== "mp3" || !filePath.endsWith(".opus")) return filePath;
+  if (format !== "mp3") return filePath;
 
-  const oggPath = filePath.replace(/\.opus$/, ".ogg");
-  await execFileAsync("ffmpeg", ["-y", "-i", filePath, "-c", "copy", oggPath]);
+  const oggPath = filePath.replace(/\.[^.]+$/, ".ogg");
+
+  await execFileAsync("ffmpeg", [
+    "-y", "-i", filePath,
+    "-vn", "-sn", "-dn",
+    "-map_metadata", "-1",
+    "-ac", "1",
+    "-ar", "16000",
+    "-c:a", "libopus",
+    "-b:a", "32k",
+    "-compression_level", "10",
+    "-application", "voip",
+    "-avoid_negative_ts", "make_zero",
+    oggPath,
+  ]);
+
   fs.unlinkSync(filePath);
   return oggPath;
 }
@@ -182,7 +199,19 @@ async function downloadRedditWithAudio(videoUrl, audioUrl, id, format) {
     : path.join(tmpDir, "video.mp4");
 
   const args = isMp3
-    ? ["-i", audioUrl, "-vn", "-c:a", "libopus", "-b:a", "128k", "-shortest", filePath]
+    ? [
+        "-i", audioUrl,
+        "-vn", "-sn", "-dn",
+        "-map_metadata", "-1",
+        "-ac", "1",
+        "-ar", "16000",
+        "-c:a", "libopus",
+        "-b:a", "32k",
+        "-compression_level", "10",
+        "-application", "voip",
+        "-avoid_negative_ts", "make_zero",
+        "-shortest", filePath,
+      ]
     : ["-i", videoUrl, "-i", audioUrl, "-c:v", "copy", "-c:a", "aac", "-shortest", filePath];
 
   await new Promise((resolve, reject) => {
