@@ -1,11 +1,6 @@
 /**
  * Downloads video or audio via yt-dlp
  * and uploads/sends to server. Handles /video and /audio commands.
- *
- * NOTE: "mp3" segue sendo o identificador interno de formato de áudio por
- * compatibilidade (api pública, configs etc.), mas o arquivo gerado de fato
- * é OGG/Opus — necessário pro WhatsApp renderizar como voice note via
- * ctx.sendAudio(path, { asVoice: true }). Ver discussão em [link/issue].
  */
 
 import { execFile, spawn } from "child_process";
@@ -75,7 +70,6 @@ async function resolveRedditUrl(url) {
 function buildYtDlpArgs(url, format) {
   const isYouTube = url.includes("youtube.com") || url.includes("youtu.be");
   const isMp3     = format === "mp3";
-
   const args = [
     "--print",             "after_move:filepath",
     "--cookies",           "cookies.txt",
@@ -89,10 +83,11 @@ function buildYtDlpArgs(url, format) {
   ];
 
   if (isMp3) {
-    // Extrai no codec nativo (sem reencode pra opus aqui ainda) — o encode
-    // final pra Opus mono/16kHz/voip acontece em ensureOggContainer, numa
-    // única passada, evitando perda de qualidade por reencodar duas vezes.
-    args.push("-x");
+    args.push(
+      "-x",
+      "--audio-format",  "mp3",
+      "--audio-quality", "0", // VBR ~best (~245kbps)
+    );
   } else {
     args.push("-f", "bv+ba/best");
   }
@@ -105,33 +100,6 @@ function buildYtDlpArgs(url, format) {
   }
 
   return args;
-}
-
-// Encode final pra voice note compatível com WhatsApp: Opus mono 16kHz
-// dentro de container OGG, com metadata/streams extras removidos (thumbnail
-// embutido, tags de origem etc. podem corromper a entrega no mobile).
-
-async function ensureOggContainer(filePath, format) {
-  if (format !== "mp3") return filePath;
-
-  const oggPath = filePath.replace(/\.[^.]+$/, ".ogg");
-
-  await execFileAsync("ffmpeg", [
-    "-y", "-i", filePath,
-    "-vn", "-sn", "-dn",
-    "-map_metadata", "-1",
-    "-ac", "1",
-    "-ar", "16000",
-    "-c:a", "libopus",
-    "-b:a", "32k",
-    "-compression_level", "10",
-    "-application", "voip",
-    "-avoid_negative_ts", "make_zero",
-    oggPath,
-  ]);
-
-  fs.unlinkSync(filePath);
-  return oggPath;
 }
 
 async function downloadYtDlp(url, id, format, t) {
@@ -177,13 +145,6 @@ async function downloadYtDlp(url, id, format, t) {
         return reject(new Error(t("error.fileNotFound")));
       }
 
-      try {
-        filePath = await ensureOggContainer(filePath, format);
-      } catch (err) {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-        return reject(new Error(`${t("error.downloadFailed")} (remux: ${err.message})`));
-      }
-
       resolve({ filePath, tmpDir });
     });
   });
@@ -195,7 +156,7 @@ async function downloadRedditWithAudio(videoUrl, audioUrl, id, format) {
 
   const isMp3    = format === "mp3";
   const filePath = isMp3
-    ? path.join(tmpDir, "audio.ogg")
+    ? path.join(tmpDir, "audio.mp3")
     : path.join(tmpDir, "video.mp4");
 
   const args = isMp3
@@ -203,13 +164,8 @@ async function downloadRedditWithAudio(videoUrl, audioUrl, id, format) {
         "-i", audioUrl,
         "-vn", "-sn", "-dn",
         "-map_metadata", "-1",
-        "-ac", "1",
-        "-ar", "16000",
-        "-c:a", "libopus",
-        "-b:a", "32k",
-        "-compression_level", "10",
-        "-application", "voip",
-        "-avoid_negative_ts", "make_zero",
+        "-c:a", "libmp3lame",
+        "-q:a", "0", // VBR ~best
         "-shortest", filePath,
       ]
     : ["-i", videoUrl, "-i", audioUrl, "-c:v", "copy", "-c:a", "aac", "-shortest", filePath];
