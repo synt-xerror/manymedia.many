@@ -7,7 +7,7 @@
     "website": "https://www.stxerr.dev"
   },
   "description": "Download videos and audio from any link.",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "license": "MIT",
   "repo": "https://github.com/synt-xerror/manymedia.many",
   "category": "media",

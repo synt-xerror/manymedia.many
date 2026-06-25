@@ -36,13 +36,13 @@ export const api = {
 // em vez de tentar adivinhar por texto, pedimos o JSON de formats e filtramos
 // por acodec/vcodec.
 
-async function resolveRedditUrl(url) {
+async function resolveRedditUrl(url, cookiesPath) {
   if (!url.includes("reddit.com") && !url.includes("redd.it")) return { url, audioUrl: null };
 
   const { stdout } = await execFileAsync("yt-dlp", [
     "-J",
     "--no-playlist",
-    "--cookies", "cookies.txt",
+    "--cookies", cookiesPath,
     url,
   ]);
 
@@ -67,12 +67,12 @@ async function resolveRedditUrl(url) {
 
 // Downloaders
 
-function buildYtDlpArgs(url, format) {
+function buildYtDlpArgs(url, format, cookiesPath) {
   const isYouTube = url.includes("youtube.com") || url.includes("youtu.be");
   const isMp3     = format === "mp3";
   const args = [
     "--print",             "after_move:filepath",
-    "--cookies",           "cookies.txt",
+    "--cookies",            cookiesPath,
     "--add-header",        "User-Agent:Mozilla/5.0",
     "--retries",           "4",
     "--fragment-retries",  "5",
@@ -102,13 +102,13 @@ function buildYtDlpArgs(url, format) {
   return args;
 }
 
-async function downloadYtDlp(url, id, format, t) {
+async function downloadYtDlp(url, id, format, t, cookiesPath) {
   return new Promise((resolve, reject) => {
     const tmpDir = path.join(DOWNLOADS_DIR, id);
     fs.mkdirSync(tmpDir, { recursive: true });
 
     const args = [
-      ...buildYtDlpArgs(url, format),
+      ...buildYtDlpArgs(url, format, cookiesPath),
       "--output", path.join(tmpDir, "%(title).80s.%(ext)s"),
       url,
     ];
@@ -183,14 +183,14 @@ async function downloadRedditWithAudio(videoUrl, audioUrl, id, format) {
   return { filePath, tmpDir };
 }
 
-async function downloadMedia(url, id, format, t) {
-  const { url: resolvedUrl, audioUrl } = await resolveRedditUrl(url);
+async function downloadMedia(url, id, format, t, cookiesPath) {
+  const { url: resolvedUrl, audioUrl } = await resolveRedditUrl(url, cookiesPath);
 
   if (audioUrl) {
     return downloadRedditWithAudio(resolvedUrl, audioUrl, id, format);
   }
 
-  return downloadYtDlp(resolvedUrl, id, format, t);
+  return downloadYtDlp(resolvedUrl, id, format, t, cookiesPath);
 }
 
 // Queue wrapper — used by both the public API and the command handler.
@@ -198,13 +198,14 @@ async function downloadMedia(url, id, format, t) {
 // file and is responsible for calling cleanup() once it's done with it.
 
 function queueDownload(url, format, ctx, t) {
+  const cookiesPath = ctx.storage.resolve("cookies.txt");
   const id = `${format}-${Date.now()}`;
 
   return new Promise((resolve, reject) => {
     ctx.download.enqueue(
       async () => {
         try {
-          const { filePath, tmpDir } = await downloadMedia(url, id, format, t);
+          const { filePath, tmpDir } = await downloadMedia(url, id, format, t, cookiesPath);
           resolve({
             filePath,
             cleanup: () => fs.rmSync(tmpDir, { recursive: true, force: true }),
@@ -263,7 +264,6 @@ async function uploadToServer(filePath, apiKey) {
 
 export default async function (ctx) {
   const { msg }  = ctx;
-  const prefix   = ctx.config.get("CMD_PREFIX");
   const { t }    = ctx.i18n.createT(import.meta.url);
 
   const commands = {
