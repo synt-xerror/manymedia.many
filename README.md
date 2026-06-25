@@ -50,7 +50,7 @@ When `UPL_MEDIA_TO_SRV=yes`, the file is uploaded to `https://api.stxerr.dev/upl
 
 **2. Log in** to Reddit (and YouTube if needed) in your browser.
 
-**3. Export** the cookies using the extension and save the file as `cookies.txt` in the root of the ManyBot project (`/opt/manybot/cookies.txt`).
+**3. Export** the cookies using the extension and save the file as `cookies.txt` in the root of manymedia data directory (`~/.manybot/data/synt-xerror/manymedia`).
 
 > Cookies expire over time. If downloads start failing again, re-export and replace the file.
 
