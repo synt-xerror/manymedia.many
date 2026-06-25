@@ -123,14 +123,14 @@ async function downloadYtDlp(url, id, format, t) {
       reject(new Error(msg));
     });
 
-    proc.stdout.on("data", d => { const s = d.toString(); stdout += s; console.log(`[video] ${s.trim()}`); });
-    proc.stderr.on("data", d => { const s = d.toString(); stderr += s; logStream.write(s); console.error(`[video] ${s.trim()}`); });
+    proc.stdout.on("data", d => { const s = d.toString(); stdout += s; console.log(`[manymedia] ${s.trim()}`); });
+    proc.stderr.on("data", d => { const s = d.toString(); stderr += s; logStream.write(s); console.error(`[manymedia] ${s.trim()}`); });
 
     proc.on("close", async code => {
-      console.log(`[video] yt-dlp exited with code ${code}`);
+      console.log(`[manymedia] yt-dlp exited with code ${code}`);
       if (code !== 0) {
         fs.rmSync(tmpDir, { recursive: true, force: true });
-        console.error(`[video] Last stderr:\n${stderr.split("\n").slice(-5).join("\n")}`);
+        console.error(`[manymedia] Last stderr:\n${stderr.split("\n").slice(-5).join("\n")}`);
         return reject(new Error(`${t("error.downloadFailed")} (exit code ${code})`));
       }
 
@@ -230,7 +230,7 @@ async function uploadToServer(filePath, apiKey) {
   let lastError;
   for (let attempt = 1; attempt <= UPLOAD_RETRIES; attempt++) {
     if (attempt > 1) {
-      console.log(`[video] Retrying upload (attempt ${attempt}/${UPLOAD_RETRIES})...`);
+      console.log(`[manymedia] Retrying upload (attempt ${attempt}/${UPLOAD_RETRIES})...`);
       await new Promise(res => setTimeout(res, UPLOAD_RETRY_DELAY_MS));
     }
     try {
@@ -239,7 +239,7 @@ async function uploadToServer(filePath, apiKey) {
 
       const res    = await fetch(UPLOAD_URL, { method: "POST", headers: { "x-api-key": apiKey }, body });
       const text   = await res.text();
-      console.log(`[video] Upload response: ${res.status} ${res.statusText}`);
+      console.log(`[manymedia] Upload response: ${res.status} ${res.statusText}`);
 
       if (!res.ok) throw new Error(`Upload failed: ${res.status} ${res.statusText}`);
 
@@ -253,7 +253,7 @@ async function uploadToServer(filePath, apiKey) {
 
     } catch (err) {
       lastError = err;
-      console.error(`[video] Upload attempt ${attempt} failed: ${err.message}`);
+      console.error(`[manymedia] Upload attempt ${attempt} failed: ${err.message}`);
     }
   }
   throw new Error(`Upload failed after ${UPLOAD_RETRIES} attempts: ${lastError.message}`);
@@ -267,33 +267,33 @@ export default async function (ctx) {
   const { t }    = ctx.i18n.createT(import.meta.url);
 
   const commands = {
-    [prefix + "video"]: "mp4",
-    [prefix + "audio"]: "mp3",
+    ["video"]: "mp4",
+    ["audio"]: "mp3",
   };
 
   for (const [cmd, format] of Object.entries(commands)) {
     if (!msg.is(cmd)) continue;
 
-    const url = msg.args[1];
+    const url = msg.args[0];
     if (!url) {
-      await msg.reply(`${t("noUrl")} \`${cmd} https://example.com/...\``);
+      await msg.reply.text(`${t("noUrl")} \`${cmd} https://example.com/...\``);
       return;
     }
 
-    await msg.reply(t("downloading"));
+    await msg.reply.text(t("downloading"));
 
     const uplToSrv  = ctx.config.get("UPL_MEDIA_TO_SRV", "no");
     const srvApiKey = ctx.config.get("MEDIA_SRV_API_KEY");
     const sendFile  = (p) => format === "mp3"
-      ? ctx.sendAudio(p)
-      : ctx.sendVideo(p);
+      ? ctx.send.audio(p)
+      : ctx.send.video(p);
 
     queueDownload(url, format, ctx, t)
       .then(async ({ filePath, cleanup }) => {
         try {
           if (uplToSrv === "yes") {
             const link = await uploadToServer(filePath, srvApiKey);
-            await msg.reply(`*Download:*\n${link}`);
+            await msg.reply.text(`*Download:*\n${link}`);
           } else {
             await sendFile(filePath);
           }
@@ -302,7 +302,7 @@ export default async function (ctx) {
           cleanup();
         }
       })
-      .catch(() => msg.reply(t("error.generic")));
+      .catch(() => msg.reply.text(t("error.generic")));
 
     return;
   }
